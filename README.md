@@ -17,14 +17,17 @@
 ### Algorithm:
 
 
-
 ### Design:
-
 
 
 ### Performance Analysis:
 
 
+### Challenges found:
 
-### Challenges found::
+
+### Tests Strategy:
+
+
+### Usage examples:
 
