@@ -24,3 +24,5 @@ lint:
 lint-strict:
 	uv run flake8 src/.
 	uv run mypy src/. --strict
+
+.PHONY: install run debug clean lint lint-strict
