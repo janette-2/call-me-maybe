@@ -19,3 +19,8 @@ members = [
 
 [tool.uv.sources]
 llm-sdk = { workspace = true }
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-cpu"
