@@ -15,6 +15,7 @@ dependencies = [
 [tool.uv.workspace]
 members = [
     "llm_sdk",
+    "src",
 ]
 
 [tool.uv.sources]

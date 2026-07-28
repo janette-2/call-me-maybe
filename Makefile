@@ -2,9 +2,7 @@ install:
 	uv sync
 
 run: src/main.py
-	uv run src/main.py
-# TEMPORAL, una vez esté implementado el paquete final será:
-# uv run python -m src
+	uv run python -m src
 
 debug: src/main.py
 	uv run python -m pdb src/main.py
