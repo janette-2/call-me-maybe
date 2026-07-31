@@ -25,3 +25,11 @@ torch = { index = "pytorch-cpu" }
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cpu"
 name = "pytorch-cpu"
+
+[tool.mypy]
+mypy_path = "llm_sdk"
+[[tool.mypy.overrides]]
+module = "llm_sdk"
+ignore_missing_imports = true
+ignore_errors = true
+follow_imports = "skip"

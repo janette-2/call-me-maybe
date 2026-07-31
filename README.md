@@ -29,6 +29,24 @@ parámetros.
 
 ### Resources:
 
+https://www.geeksforgeeks.org/python/json-loads-in-python/
+https://www.geeksforgeeks.org/python/json-load-in-python/
+
+
+#### Configuración de mypy para llm_sdk:
+El flag `--ignore-missing-imports` del Makefile **no** cubre el error `attr-defined`
+("Module llm_sdk has no attribute Small_LLM_Model"): ese flag solo ignora módulos
+que no existen en el filesystem. Como `llm_sdk` sí existe pero no tiene anotaciones
+de tipos, mypy no encuentra el atributo. La solución está en `pyproject.toml`:
+
+- `mypy_path = "llm_sdk"` → apunta al paquete real (`llm_sdk/llm_sdk/`)
+- `[[tool.mypy.overrides]]` con `module = "llm_sdk"`, `ignore_errors = true` y
+  `follow_imports = "skip"` → ignora errores dentro del módulo y evita que mypy
+  analice `torch`/`transformers` (lo que ralentizaba o colgaba el análisis).
+  El SDK no se modifica.
+
+
+
 #### LLM_SDK:
 The package of the LLM (Large Language Model) used [Qwen 0.6B] contains the following key features:
 
@@ -134,27 +152,3 @@ manejarlo como caso especial. Aún por definir la implementación concreta.
 ### Usage examples:
 
 
-## NOTAS:
-
-Chars a sacar los IDs para guardarlos en diccionario:
-
-"{"
-"}"
-":"
-","
-" "
-"\n"
-"fn_name"
-"args"
-"fn_add_numbers"
-"fn_greet"
-"fn_reverse_string"
-"fn_get_square_root"
-"fn_substitute_string_with_regex"
-"a"
-"b"
-"name"
-"s"
-"source_string"
-"regex"
-"replacement"
