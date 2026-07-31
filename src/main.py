@@ -17,8 +17,9 @@ def fixed_ids(model: Small_LLM_Model, dict_functions: dict) -> dict:
 
     Args:
         model: Instance of the Qwen3-0.6B model (used only for tokenizing).
-        dict_functions: Dictionary ``{function_name: {parameter: type}}``
-            loaded from ``functions_definition.json``.
+        dict_functions: Dictionary ``{function_name: {"parameters": {...},
+            "description": str, "returns": {...}}}`` loaded from
+            ``functions_definition.json``.
 
     Returns:
         Dictionary where each key is a piece of text (e.g. ``"{"``,
@@ -42,13 +43,13 @@ def fixed_ids(model: Small_LLM_Model, dict_functions: dict) -> dict:
         dict_fixed[fun] = model.encode(fun).flatten().tolist()
 
         # Get the parameters of each function
-        for params in dict_functions[fun]:
+        for params in dict_functions[fun].get("parameters"):
             dict_fixed[params] = model.encode(params).flatten().tolist()
 
     return dict_fixed
 
 
-def functions_parameters() -> dict:
+def functions_info() -> dict:
     """Load function definitions from the input file.
 
     Reads ``data/input/functions_definition.json`` and transforms it into a
@@ -60,9 +61,11 @@ def functions_parameters() -> dict:
     ``try``/``except`` that prints the error and returns an empty dictionary.
 
     Returns:
-        Dictionary ``{function_name: {parameter: {"type": type}}}``, e.g.
-        ``{"fn_add_numbers": {"a": {"type": "number"}}}``. Empty if the file
-        is missing or malformed.
+        Dictionary ``{function_name: {"parameters": {param: {"type": type}},
+        "description": str, "returns": {"type": type}}}``, e.g.
+        ``{"fn_add_numbers": {"parameters": {"a": {"type": "number"}},
+        "description": "Add two numbers...", "returns": {"type": "number"}}}``.
+        Empty if the file is missing or malformed.
     """
     dict_func_parameters = {}
     try:
@@ -70,7 +73,11 @@ def functions_parameters() -> dict:
             f_content = json.load(f)
 
         for dictionary in f_content:
-            dict_func_parameters[dictionary["name"]] = dictionary["parameters"]
+            dict_func_parameters[dictionary["name"]] = {
+                "parameters": dictionary["parameters"],
+                "description": dictionary["description"],
+                "returns": dictionary["returns"]
+            }
 
     except Exception as e:
         print(f"{e}")
@@ -87,7 +94,7 @@ def main() -> None:
         3. Build the mapping of every fixed JSON piece to its token IDs.
     """
     model = Small_LLM_Model()
-    dict_functions = functions_parameters()
+    dict_functions = functions_info()
     dict_final = fixed_ids(model, dict_functions)
     print(dict_final)
 
