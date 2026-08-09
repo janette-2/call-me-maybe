@@ -63,6 +63,78 @@ El resto (get_path_to_*) no se necesita para el proyecto.
 
 ### Design:
 
+**Estructura de datos: `dict_functions`** (devuelto por `functions_info()`)
+
+Diccionario cuya clave es el nombre de la función y cuyo valor es otro
+diccionario con tres claves: `parameters`, `description` y `returns`.
+
+```python
+{
+    "fn_add_numbers": {
+        "parameters": {
+            "a": {"type": "number"},
+            "b": {"type": "number"},
+        },
+        "description": "Add two numbers together and return their sum.",
+        "returns": {"type": "number"},
+    },
+    "fn_greet": {
+        "parameters": {"name": {"type": "string"}},
+        "description": "Generate a greeting message for a person by name.",
+        "returns": {"type": "string"},
+    },
+}
+```
+
+Para acceder al tipo del parámetro `"a"` de `"fn_add_numbers"`:
+`dict_functions["fn_add_numbers"]["parameters"]["a"]["type"]` → `"number"`.
+
+> **Trampa frecuente:** al iterar con `for func in dict_functions`, la variable
+> `func` es el **nombre** (string), NO el valor. Para acceder a los datos de esa
+> función hay que usar `dict_functions[func]`. Intentar `func.get(...)` lanza
+> `AttributeError: 'str' object has no attribute 'get'`.
+
+**Estructura de datos: `dict_fixed`** (devuelto por `fixed_ids()`)
+
+Diccionario que mapea cada pieza de texto del JSON a sus token IDs (lista plana
+de enteros).
+
+```python
+{
+    "{": [90],
+    "}": [92],
+    "fn_add_numbers": [8822, 2891, 32964],
+    "a": [64],
+    ...
+}
+```
+
+**El super-prompt** (`build_super_prompt()`)
+
+Texto que se pasa al modelo para cada prompt de usuario. Contiene: el rol del
+asistente, las reglas de salida (solo JSON, estructura exacta, `fn_name` debe
+ser una función disponible, `args` con los argumentos requeridos y tipos
+correctos) y el listado dinámico de funciones con sus descripciones y
+parámetros.
+
+> **Aclaración importante:** el super-prompt **no es un archivo de entrada**.
+> Los archivos de `data/input/` siguen siendo la única entrada del programa.
+> El super-prompt es una construcción interna: tu código lee las funciones de
+> `functions_definition.json` y los prompts de `function_calling_tests.json`,
+> y luego monta el texto que presenta esa información al LLM. El flujo es:
+>
+> ```
+> data/input/functions_definition.json ──┐
+>                                        ▼
+> data/input/function_calling_tests.json ──►  build_super_prompt() ──►  LLM
+>                                             ▲
+>                                         plantilla fija
+>                                         (instrucciones/reglas)
+> ```
+>
+> El prompt del usuario (p.ej. `"What is the sum of 2 and 3?"`) se inserta al
+> final del super-prompt, después del listado de funciones y antes de la
+> etiqueta `Output:` que indica al modelo dónde empieza su respuesta.
 
 ### Performance Analysis:
 
@@ -144,6 +216,121 @@ Si el modelo recibe un prompt que no encaja con ninguna función, siempre va
 a generar algo (no puede "callarse"). La solución planteada es: si la
 probabilidad máxima entre los nombres de función es baja, detectarlo y
 manejarlo como caso especial. Aún por definir la implementación concreta.
+
+**12. Cómo funcionan las comillas triples y la utilidad de `textwrap.dedent()`**
+Al construir el super-prompt con strings multilínea (obligados a partirlos por
+el límite de 79 caracteres de flake8, E501), el output salía con indentación
+sobrante y líneas en blanco extra. La causa es que las comillas triples de
+Python son **literales**: todo carácter escrito entre ellas —incluida la
+sangría del código— forma parte del texto final. No hay "decoración visual":
+cada espacio que indentamos el código dentro del string es un espacio real en
+el prompt.
+
+La solución fue `textwrap.dedent()`: calcula la sangría común mínima entre las
+líneas no vacías del string y la elimina de todas por igual. No colapsa
+espacios ni reordena el texto, solo resta el prefijo común. Detalle
+importante: `dedent()` **no toca los saltos de línea**, así que los `\n`
+iniciales y finales de las comillas triples hay que gestionarlos aparte
+(`"""\` para suprimir el primer salto, o ajustando los `\n` manualmente).
+
+Ejemplo visual con un string de 3 líneas:
+
+```
+ANTES (el string tal como está escrito en el código):
+
+    Soy la primera linea.
+        Soy la segunda, con mas sangria.
+    Soy la tercera.
+
+            ┌─ 4 espacios (común mínimo)
+            │
+    linea 1: 4 espacios  →  0 espacios  (resta 4)
+    linea 2: 8 espacios  →  4 espacios  (resta 4)
+    linea 3: 4 espacios  →  0 espacios  (resta 4)
+    vacías: se ignoran
+
+DESPUÉS de dedent():
+
+Soy la primera linea.
+    Soy la segunda, con mas sangria.
+Soy la tercera.
+```
+
+La sangría común mínima es 4 (todas las líneas tienen al menos 4). `dedent()`
+resta 4 a **todas por igual**: la línea de 8 se queda con 4, la de 4 con 0.
+Los `\n` no cambian: quedan exactamente donde estaban.
+
+**Solución final elegida en este proyecto:** en `template_rules` y en el
+listado de funciones escribimos el contenido del string a **columna 0**
+(pegado al margen izquierdo, sin indentar dentro de las comillas), igual que
+las funciones. Así el string ya nace limpio y `dedent()` no tiene que hacer
+nada en esos bloques. `dedent()` solo se aplica a `template_intro`, cuyo
+contenido sí mantenemos indentado para que el código se lea mejor.
+
+**Inconveniente a conocer:** mantener el texto a columna 0 dentro de las
+comillas triples se ve raro en el código (el texto no queda alineado con la
+indentación de Python). Es un trade-off consciente: preferimos un prompt
+limpio de cara al modelo que un código "bonito". flake8 no se queja porque
+no comprueba la indentación del contenido de los strings, solo la del código.
+Y no hay problema con E501 porque esas líneas son cortas; si fueran largas,
+habría que partirlas y volveríamos al problema inicial.
+
+**13. Concatenar strings largos sin pasarse del límite de E501**
+Al ensamblar el prompt en `build_super_prompt()`, intentamos concatenar las
+cuatro partes en una sola línea:
+
+```python
+prompt = intro + rules + functions + fin
+```
+
+Esa línea supera los 79 caracteres de E501, así que flake8 la marcaría. La
+solución que usamos es la **continuación implícita entre paréntesis**:
+envolver la expresión en `(...)` permite partir la línea después de cada `+`
+sin ningún carácter extra:
+
+```python
+prompt = (template_intro
+          + template_rules
+          + template_functions
+          + f"\nUser: {input_call}\nOutput: ")
+```
+
+Python trata todo lo que hay entre `(` y `)` como una sola expresión
+(independientemente de los saltos de línea), así que no hace falta `\` y
+cada operando queda en su propia línea por debajo de los 79 caracteres.
+Este patrón sirve para cualquier operación larga (sumas, concatenaciones,
+argumentos de funciones), no solo para strings.
+
+**14. Conversion de [x, y] a 'x, y'**
+El -1 en Python se utiliza para referirse al último elemento de una secuencia (como una cadena de texto o una lista) contando de atrás hacia adelante.
+En el truco str(mi_lista)[1:-1], estamos usando una técnica llamada slicing (rebanado) que funciona bajo la estructura [inicio:fin].
+Aquí te explico exactamente por qué elimina el corchete final:
+**a. El conteo inverso en Python**
+Python permite indexar desde el final usando números negativos:
+
+* -1 es el último carácter.
+* -2 es el penúltimo carácter.
+
+Al convertir una lista a texto con str([1, 2, 3]), el texto resultante es "[1, 2, 3]".
+
+* El índice 0 es el corchete de apertura [.
+* El índice -1 es el corchete de cierre ].
+
+**b. La regla del "límite abierto"**
+En Python, el índice de fin en un slicing no se incluye en el resultado (es exclusivo).
+Por lo tanto, al escribir [1:-1]:
+
+* 1: Empieza en el índice 1 (el primer número, saltándose el [ del índice 0).
+* -1: Se detiene justo antes del índice -1 (saltándose el ] del final).
+
+**Ejemplo visual con "[1, 2, 3]"**
+
+| Carácter | [ | 1 | , | | 2 | , | | 3 | ] |
+|---|---|---|---|---|---|---|---|---|---|
+| Índice Positivo | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| Índice Negativo | -9 | -8 | -7 | -6 | -5 | -4 | -3 | -2 | -1 |
+
+Al cortar desde 1 hasta -1, Python toma todo lo que está entre el fondo verde y el fondo rojo, dejando el interior intacto y eliminando ambos corchetes de un solo golpe.
 
 
 ### Tests Strategy:
