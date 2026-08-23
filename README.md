@@ -332,6 +332,32 @@ Por lo tanto, al escribir [1:-1]:
 
 Al cortar desde 1 hasta -1, Python toma todo lo que está entre el fondo verde y el fondo rojo, dejando el interior intacto y eliminando ambos corchetes de un solo golpe.
 
+**15. Atascos del Paso 4 (loop con decodificación restringida)**
+
+* **Confundir la salida del subject con la salida del LLM.** El archivo
+  `output/function_calling_results.json` del subject incluye `"prompt"`, pero
+  ese campo lo escribe **tu programa** (ya posee el prompt). El LLM solo
+  genera el fragmento `{"fn_name": ..., "args": ...}`; `"prompt"` no es una
+  pieza que haya que forzar ni generar durante el loop.
+* **`append` vs `extend` en la lista de IDs.** `list.append([90])` mete la
+  sublista como un solo elemento → lista anidada `[[90], ...]`. `list.extend([90])`
+  desempaqueta y añade el `90` suelto → lista plana `[90, ...]`. Para ir
+  construyendo la secuencia de tokens hay que usar `extend`, no `append`.
+* **No preconstruir la secuencia completa de golpe.** No se puede montar el
+  JSON entero antes de tiempo porque el modelo decide en mitad del camino
+  (qué función, qué valores). El loop es paso a paso: cada vuelta añade un
+  token (forzado con `extend` o elegido por el modelo) y vuelve a preguntar
+  con todo el contexto acumulado.
+* **`list.extend()` devuelve `None`.** `final = prompt_ids.extend(ids_list)`
+  guarda `None` en `final` porque `extend()` modifica la lista en el sitio y
+  no devuelve nada. El error `TypeError: 'NoneType' object cannot be
+  converted to 'Sequence'` aparece al hacer `model.decode(final)`. La lista
+  ya contiene el resultado: hay que pasarle `prompt_ids` directamente a
+  `decode()`, no una variable asignada al método.
+* **Ocultar el builtin `input`.** Usar `input` como nombre de parámetro oculta
+  la función nativa de Python. Se renombró a `input_call` en
+  `build_super_prompt()` para que el código sea seguro y claro.
+
 
 ### Tests Strategy:
 

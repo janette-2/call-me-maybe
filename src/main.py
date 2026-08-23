@@ -1,9 +1,10 @@
 from llm_sdk import Small_LLM_Model
 import json
+# import itertools
 
 
 def fixed_ids(model: Small_LLM_Model,
-              dict_functions: dict, user_in: str) -> dict:
+              dict_functions: dict) -> dict:
     """Map every piece of the output JSON to its token IDs.
 
     The LLM does not work with text but with numeric IDs. This function uses
@@ -32,14 +33,10 @@ def fixed_ids(model: Small_LLM_Model,
                    ":",
                    ",",
                    " ",
-                   "prompt",
                    "fn_name",
                    "args",
-                   f"{user_in}",
                    "\"",
                    "\n",
-                   "\t",
-                   "\v",
                    ]
 
     for fixed in chars_fixed:
@@ -169,10 +166,70 @@ and only those, with the correct type (number, string, boolean).\n\n"""
     return prompt
 
 
-def loop_prompt_output(input: str, model: Small_LLM_Model) -> str:
+def loop_prompt_output(input: str, model: Small_LLM_Model,
+                       dict_fixed_chars: dict, dict_functions: dict) -> list:
     init_prompt_ids = model.encode(input).flatten().tolist()
+
+    # Forces the fixed structure tokens to help the LLM predict the 'fn_name'
+    init_prompt_ids.extend(dict_fixed_chars["{"])
+    init_prompt_ids.extend(dict_fixed_chars["\""])
+    init_prompt_ids.extend(dict_fixed_chars["fn_name"])
+    init_prompt_ids.extend(dict_fixed_chars["\""])
+    init_prompt_ids.extend(dict_fixed_chars[":"])
+    init_prompt_ids.extend(dict_fixed_chars[" "])
+    init_prompt_ids.extend(dict_fixed_chars["\""])
+
+    # Gets list of the function names with their converted tokens:
+    fn_names_tokens = []
+    for name in dict_functions:
+        fn_names_tokens.extend([dict_fixed_chars.get(name)])
+        # Returns a dict with of lists [[x,y,z], [u], ...]
+    print(fn_names_tokens)
+
+    i = 0
+    llm_ids = []
+    temp_prompt = init_prompt_ids.copy()
+    while len(fn_names_tokens) > 1:
+        # Catch the new token that the LLM predicts after the prompt input
+        llm_logits = model.get_logits_from_input_ids(temp_prompt)
+        next_id = llm_logits.index(max(llm_logits))
+        # Store the predicted ids into a list
+        llm_ids.extend([next_id])
+
+        # Compare each functions ids with the given next_id
+        fn_ids = fn_names_tokens.copy()
+        for ids in fn_ids:
+            # Check if the ids have enough indexes and if the retrieved
+            # llm_id[i] matches the ids[i]
+            if len(ids) > i + 1 and ids[i] == llm_ids[i]:
+                continue
+            else:
+                fn_names_tokens.remove(ids)
+
+        temp_prompt.extend([next_id])
+        i += 1
+
+    # Outside the while, when we have len(fn_names_tokens) == 1
+    # we append the final function to the init_prompt_ids
+    init_prompt_ids.extend(fn_names_tokens[0])
+
+    # Also, extend with the preparations to the arguments
+    init_prompt_ids.extend(dict_fixed_chars["\""])
+    init_prompt_ids.extend(dict_fixed_chars[","])
+    init_prompt_ids.extend(dict_fixed_chars[" "])
+    init_prompt_ids.extend(dict_fixed_chars["\""])
+    init_prompt_ids.extend(dict_fixed_chars["args"])
+    init_prompt_ids.extend(dict_fixed_chars["\""])
+    init_prompt_ids.extend(dict_fixed_chars[":"])
+    init_prompt_ids.extend(dict_fixed_chars[" "])
+    init_prompt_ids.extend(dict_fixed_chars["{"])
+
+    # BUCLE PA PONER LA SALIDA DE TODOS LOS ARGUMENTOS DE LA FUNCION,
+    # SACANDO DEL DICT TODOS SUS CORRESPONDIENTES
+    
+    # FOR TESTING
     print(init_prompt_ids)
-    return ("")
+    return init_prompt_ids
 
 
 def main() -> None:
@@ -186,32 +243,14 @@ def main() -> None:
     """
     model = Small_LLM_Model()
     dict_functions = functions_info()
-    dict_fixed_chars = fixed_ids(model, dict_functions, "What is the"
-                                 " sum of 2 and 3?")
+    dict_fixed_chars = fixed_ids(model, dict_functions)
     prompt = build_super_prompt(dict_functions, "What is the sum of 2 and 3?")
-    loop_prompt_output(prompt, model)
+    # prompt_ids = model.encode(prompt).flatten().tolist()
+    init_prompt_ids = loop_prompt_output(prompt, model,
+                                         dict_fixed_chars, dict_functions)
     print("")
-    user_input = "What is the sum of 2 and 3?"
-    template_0 = [dict_fixed_chars["{"],
-                  dict_fixed_chars["\v"],
-                  dict_fixed_chars["\t"],
-                  dict_fixed_chars["\""],
-                  dict_fixed_chars["prompt"],
-                  dict_fixed_chars["\""],
-                  dict_fixed_chars[":"],
-                  dict_fixed_chars[" "],
-                  dict_fixed_chars["\""],
-                  dict_fixed_chars[f"{user_input}"],
-                  dict_fixed_chars["\""],
-                  dict_fixed_chars[","],
-                  dict_fixed_chars["\v"],
-                  dict_fixed_chars["\t"],
-                  dict_fixed_chars["\""],
-                  dict_fixed_chars["fn_name"],
-                  dict_fixed_chars["\""],
-                  dict_fixed_chars[":"],
-                  ]
-    print(template_0)
+
+    print(model.decode(init_prompt_ids))
 
 
 if __name__ == "__main__":
