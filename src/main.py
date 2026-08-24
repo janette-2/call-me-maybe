@@ -226,7 +226,25 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
 
     # BUCLE PA PONER LA SALIDA DE TODOS LOS ARGUMENTOS DE LA FUNCION,
     # SACANDO DEL DICT TODOS SUS CORRESPONDIENTES
-    
+    fn = model.decode(fn_names_tokens[0])
+    args_fn = [arg for arg in dict_functions[fn]["parameters"]]
+    i = 0
+    for arg in args_fn:
+        init_prompt_ids.extend(dict_fixed_chars["\""])
+        init_prompt_ids.extend(dict_fixed_chars[arg])
+        init_prompt_ids.extend(dict_fixed_chars["\""])
+        init_prompt_ids.extend(dict_fixed_chars[":"])
+        init_prompt_ids.extend(dict_fixed_chars[" "])
+        llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
+        next_id = llm_logits.index(max(llm_logits))
+        init_prompt_ids.extend([next_id])
+        i += 1
+        if i + 1 == len(args_fn):
+            init_prompt_ids.extend(dict_fixed_chars[","])
+            init_prompt_ids.extend(dict_fixed_chars[" "])
+        else:
+            init_prompt_ids.extend(dict_fixed_chars["}"])
+
     # FOR TESTING
     print(init_prompt_ids)
     return init_prompt_ids
