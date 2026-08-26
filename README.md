@@ -385,6 +385,33 @@ la condición para que evalúe si acabamos de procesar el **último** argumento
 (`i == len(args_fn)`) y actuar en consecuencia. Lección: siempre verificar
 la lógica de condiciones con casos de borde (1 arg, 2 args, 3+ args).
 
+**19. `while` infinito al generar argumentos: `or` vs `and` y comparar `int` con `list`**
+El `while` que generaba tokens de argumentos colgaba `make run` sin devolver
+nunca resultado. La línea defectuosa era:
+
+```python
+while next_id != dict_fixed_chars[","] or next_id != dict_fixed_chars["\""][0]:
+```
+
+Tenía **dos errores** que se combinaban:
+
+1. **`or` en vez de `and`**: la condición `A != x or A != y` es **siempre True**
+   (un valor no puede ser igual a dos cosas distintas; si no es `x`, la primera
+   parte ya es verdadera). Debería ser `and` para que solo salga del buelle
+   cuando `next_id` no sea ninguno de los dos delimitadores.
+
+2. **Comparar `int` con `list`**: `dict_fixed_chars[","]` devuelve una **lista**
+   `[11]`, no un entero. `next_id` es un `int`. La comparación `int != list`
+   **siempre es True** en Python. Debería ser `dict_fixed_chars[","][0]` para
+   acceder al elemento dentro de la lista.
+
+Combinados, ambos errores hacían que la condición **nunca fuera falsa**,
+resultando en un bucle infinito que nunca permitía al programa terminar.
+
+Lección: al escribir condiciones de salida de `while`, verificar siempre que
+(a) la operación lógica (`and`/`or`) refleje la intención real y (b) los
+tipos comparados sean compatibles (no mezclar `int` con `list`).
+
 
 ### Tests Strategy:
 

@@ -150,7 +150,7 @@ and only those, with the correct type (number, string, boolean).\n\n"""
         list_parameters = []
 
         for param in dict_parameters:
-            temp = f"{param} ({dict_parameters[param].get("type")})"
+            temp = f"{param} ({dict_parameters[param].get('type')})"
             list_parameters.append(temp)
 
         func_description = f"""- {func}: {dict_functions[func].get(
@@ -278,26 +278,32 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
 
         if arg_type == "string":
             init_prompt_ids.extend(dict_fixed_chars["\""])
-
+        
         llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
         next_id = llm_logits.index(max(llm_logits))
         init_prompt_ids.extend([next_id])
+        while next_id != dict_fixed_chars[","][0] and next_id != dict_fixed_chars["\""][0]:
+            llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
+            next_id = llm_logits.index(max(llm_logits))
+            init_prompt_ids.extend([next_id])
+
         # If not last, put ', '
-        if i + 1 != len(args_fn) and next_id == dict_fixed_chars[","][0] and args_type != "string":
+        if i + 1 != len(args_fn) and args_type != "string":
             init_prompt_ids.extend(dict_fixed_chars[","])
             init_prompt_ids.extend(dict_fixed_chars[" "])
-            i += 1
+            
         # Else, close the brackets of the output
-        elif i + 1 != len(args_fn) and args_type == "string" and next_id == dict_fixed_chars["\""][0]:
+        elif i + 1 != len(args_fn) and args_type == "string":
             init_prompt_ids.extend(dict_fixed_chars["\""])
             init_prompt_ids.extend(dict_fixed_chars[","])
             init_prompt_ids.extend(dict_fixed_chars[" "])
-            i += 1
+
+        i += 1
 
     init_prompt_ids.extend(dict_fixed_chars["}"])
     init_prompt_ids.extend(dict_fixed_chars["}"])
     # FOR TESTING, PRINT TO VIEW THE PROMPT IDs
-    # print(init_prompt_ids)
+    print(init_prompt_ids)
     return init_prompt_ids
 
 
@@ -306,7 +312,7 @@ def main() -> None:
 
     Steps:
         1. Load the Qwen3-0.6B model (``Small_LLM_Model``).
-        2. Load the function definitions from the input file.
+        2. Load the function definitions from the input file.s
         3. Build the mapping of every fixed JSON piece to its token IDs.
         4. Build the super-prompt with a sample user request.
         5. Run constrained decoding (``loop_prompt_output``) to produce
