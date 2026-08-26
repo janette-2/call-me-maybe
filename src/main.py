@@ -168,6 +168,44 @@ and only those, with the correct type (number, string, boolean).\n\n"""
 
 def loop_prompt_output(input: str, model: Small_LLM_Model,
                        dict_fixed_chars: dict, dict_functions: dict) -> list:
+    """Run constrained decoding to produce a valid function-call JSON.
+
+    This is the core of the project. It builds the JSON output in three
+    phases:
+
+    1. **Structure forcing**: appends the fixed JSON skeleton (``{``, ``"``,
+       ``fn_name``, ``"``, ``:``, `` ``, ``"``) to the tokenised prompt.
+       These are tokens the program decides, not the LLM.
+
+    2. **Function identification**: lets the model predict one token at a
+       time and eliminates function-name candidates that do not match.
+       Uses a *copy* of the candidate list for iteration so that removals
+       during the loop do not skip elements.  Stops when exactly one
+       candidate remains (or zero, which is an error).
+
+    3. **Argument generation**: for each required parameter of the chosen
+       function, forces the key (``"param_name": ``) and lets the model
+       predict the value token.
+
+    The function appends directly to ``init_prompt_ids`` at every step so
+    that each model prediction sees the full accumulated context.  A
+    separate ``temp_prompt`` copy is used inside the function-identification
+    loop to avoid double-counting tokens.
+
+    Args:
+        input: The raw text prompt (already tokenised and extended with
+            the fixed structure before calling this function).
+        model: Instance of the Qwen3-0.6B model (for encoding, decoding
+            and logit retrieval).
+        dict_fixed_chars: Dictionary mapping text fragments to their flat
+            list of token IDs (from ``fixed_ids()``).
+        dict_functions: Dictionary of function definitions (from
+            ``functions_info()``).
+
+    Returns:
+        Flat list of token IDs representing the full prompt plus the
+        generated JSON output, ready to be passed to ``model.decode()``.
+    """
     init_prompt_ids = model.encode(input).flatten().tolist()
 
     # Forces the fixed structure tokens to help the LLM predict the 'fn_name'
@@ -224,51 +262,75 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
     init_prompt_ids.extend(dict_fixed_chars[" "])
     init_prompt_ids.extend(dict_fixed_chars["{"])
 
-    # BUCLE PA PONER LA SALIDA DE TODOS LOS ARGUMENTOS DE LA FUNCION,
-    # SACANDO DEL DICT TODOS SUS CORRESPONDIENTES
+    # Retrieve, through the obtained fn, its arguments
     fn = model.decode(fn_names_tokens[0])
     args_fn = [arg for arg in dict_functions[fn]["parameters"]]
+
+    # Loop to print the list of arguments stored
     i = 0
     for arg in args_fn:
+        arg_type = args_type = dict_functions[fn]["parameters"][arg]["type"]
         init_prompt_ids.extend(dict_fixed_chars["\""])
         init_prompt_ids.extend(dict_fixed_chars[arg])
         init_prompt_ids.extend(dict_fixed_chars["\""])
         init_prompt_ids.extend(dict_fixed_chars[":"])
         init_prompt_ids.extend(dict_fixed_chars[" "])
+
+        if arg_type == "string":
+            init_prompt_ids.extend(dict_fixed_chars["\""])
+
         llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
         next_id = llm_logits.index(max(llm_logits))
         init_prompt_ids.extend([next_id])
-        i += 1
-        if i + 1 == len(args_fn):
+        # If not last, put ', '
+        if i + 1 != len(args_fn) and next_id == dict_fixed_chars[","][0] and args_type != "string":
             init_prompt_ids.extend(dict_fixed_chars[","])
             init_prompt_ids.extend(dict_fixed_chars[" "])
-        else:
-            init_prompt_ids.extend(dict_fixed_chars["}"])
+            i += 1
+        # Else, close the brackets of the output
+        elif i + 1 != len(args_fn) and args_type == "string" and next_id == dict_fixed_chars["\""][0]:
+            init_prompt_ids.extend(dict_fixed_chars["\""])
+            init_prompt_ids.extend(dict_fixed_chars[","])
+            init_prompt_ids.extend(dict_fixed_chars[" "])
+            i += 1
 
-    # FOR TESTING
-    print(init_prompt_ids)
+    init_prompt_ids.extend(dict_fixed_chars["}"])
+    init_prompt_ids.extend(dict_fixed_chars["}"])
+    # FOR TESTING, PRINT TO VIEW THE PROMPT IDs
+    # print(init_prompt_ids)
     return init_prompt_ids
 
 
 def main() -> None:
-    """Entry point: load the model and build the super-prompt.
+    """Entry point: load the model, generate a function call and print it.
 
     Steps:
         1. Load the Qwen3-0.6B model (``Small_LLM_Model``).
         2. Load the function definitions from the input file.
         3. Build the mapping of every fixed JSON piece to its token IDs.
-        4. Build the super-prompt with a sample user request and print it.
+        4. Build the super-prompt with a sample user request.
+        5. Run constrained decoding (``loop_prompt_output``) to produce
+           the function-call JSON.
+        6. Decode the token IDs back to text and parse the JSON with
+           ``json.loads()``.
     """
     model = Small_LLM_Model()
     dict_functions = functions_info()
     dict_fixed_chars = fixed_ids(model, dict_functions)
     prompt = build_super_prompt(dict_functions, "What is the sum of 2 and 3?")
     # prompt_ids = model.encode(prompt).flatten().tolist()
-    init_prompt_ids = loop_prompt_output(prompt, model,
-                                         dict_fixed_chars, dict_functions)
+    final_prompt_ids = loop_prompt_output(prompt, model,
+                                          dict_fixed_chars, dict_functions)
+    final_output = model.decode(final_prompt_ids)
+    # Find the Output phrase and store the result after that (second half)
+    result_prompt = final_output.split("Output: ", 1)[1]
+    print("DEBUG repr:", repr(result_prompt))
+    result_dict = json.loads(result_prompt)
+    # print(result_dict)
+    print(repr(result_prompt))
+    # FOR TESTING, PRINT TO VIEW THE FINAL PROMPT
     print("")
-
-    print(model.decode(init_prompt_ids))
+    print(final_output)
 
 
 if __name__ == "__main__":

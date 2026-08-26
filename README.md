@@ -358,6 +358,33 @@ Al cortar desde 1 hasta -1, Python toma todo lo que está entre el fondo verde y
   la función nativa de Python. Se renombró a `input_call` en
   `build_super_prompt()` para que el código sea seguro y claro.
 
+**16. Iterar sobre una lista mientras se elimina → se saltan elementos**
+En el while de identificación de función, el `for ids in fn_names_tokens`
+recorría la lista y hacía `fn_names_tokens.remove(ids)` cuando el candidato
+no coincidía. El problema: Python avanza el iterator interno al eliminar un
+elemento, así que si se eliminan dos consecutivos, el segundo se salta.
+Solución: iterar sobre una **copia** (`fn_ids = fn_names_tokens.copy()`) para
+que las eliminaciones no afecten al recorrido. La copia es barata (pocos
+elementos) y garantiza que se examina cada candidato exactamente una vez.
+
+**17. El prompt no se actualiza dentro del while → predicciones repetidas**
+`init_prompt_ids` era la secuencia de tokens que el modelo recibía como
+entrada. Si no se modificaba dentro del while, el modelo veía **siempre la
+misma secuencia** y, por tanto, predecía **siempre el mismo token**. La
+solución fue crear `temp_prompt = init_prompt_ids.copy()` y hacer
+`temp_prompt.extend([next_id])` en cada paso, de modo que cada predicción
+recibe el contexto completo incluyendo las predicciones anteriores. Se usa
+una copia para que `init_prompt_ids` no acumule tokens duplicados.
+
+**18. Condiciones invertidas al construir el JSON de argumentos**
+Al cerrar las llaves del JSON, la condición `if i + 1 == len(args_fn)` se
+cumplía **una posición demasiado pronto** porque `i` se incrementaba **antes**
+del `if`. Con 2 argumentos funcionaba por coincidencia, pero con 3+ fallaba:
+ponía `}` después del primer arg en vez de `, `. La corrección fue cambiar
+la condición para que evalúe si acabamos de procesar el **último** argumento
+(`i == len(args_fn)`) y actuar en consecuencia. Lección: siempre verificar
+la lógica de condiciones con casos de borde (1 arg, 2 args, 3+ args).
+
 
 ### Tests Strategy:
 

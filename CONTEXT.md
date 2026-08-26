@@ -1,7 +1,12 @@
 # Contexto de la sesión - call_me_maybe
 
 ## Dónde quedamos
-Paso 3 (super-prompt) **TERMINADO**. `build_super_prompt(dict_functions, input_call)` construye el prompt (rol + reglas + listado de funciones + `User: ...` + `Output: `) y se prueba con `make run`. El formato de salida quedó limpio escribiendo el contenido de los strings a **columna 0** dentro de las comillas triples (en vez de usar `textwrap.dedent()`), y se eliminaron las variables intermedias `intro`/`rules`/`functions` que eran renombres muertos. Docstrings y README (desafíos 12 y 13) actualizados. `make lint` pasa. Al retomar, toca el **Paso 4**: loop con decodificación restringida.
+Paso 4 (loop + decodificación restringida) **EN PROGRESO**. La identificación
+del nombre de función y la generación de argumentos de un solo token funcionan
+para `fn_add_numbers`. `json.loads()` parsea correctamente el output. Falta:
+args multi-token, manejo de 0 candidatos, procesar todos los prompts del
+fichero de tests y escribir el output final. Hay un bug latente en la condición
+comma/brace para funciones con 3+ argumentos.
 
 ## Plan de implementación (5 pasos)
 
@@ -9,8 +14,14 @@ Paso 3 (super-prompt) **TERMINADO**. `build_super_prompt(dict_functions, input_c
 Paso 1: Token discovery          → HECHO
 Paso 2: Cargar funciones JSON    → HECHO
 Paso 3: Construir super-prompt   → HECHO
-Paso 4: Loop + autómata de estados → SIGUIENTE
-Paso 5: Procesar prompts y escribir output
+Paso 4: Loop + autómata          → EN PROGRESO
+  - Identificación de fn_name    → Funciona
+  - Args de un solo token        → Funciona
+  - Parseo con json.loads()      → Funciona
+  - Args multi-token (strings)   → PENDIENTE
+  - Manejo de 0 candidatos       → PENDIENTE
+  - Bug: condición 3+ args       → PENDIENTE
+Paso 5: Procesar prompts y escribir output → PENDIENTE
 ```
 
 ## Visión completa del flujo
@@ -50,7 +61,7 @@ PROMPT DEL USUARIO: "What is the sum of 2 and 3?"
 
 ### Hecho
 
-**1. `functions_info()`** (antes `functions_parameters()`) → devuelve:
+**1. `functions_info()`** → devuelve:
 ```python
 {
   "fn_add_numbers": {
@@ -77,6 +88,18 @@ PROMPT DEL USUARIO: "What is the sum of 2 and 3?"
 
 **3. `build_super_prompt(dict_functions, input_call)`** → construye el texto con rol, reglas, listado de funciones y el prompt del usuario al final (termina en `Output: `). La salida queda limpia escribiendo el contenido de los strings a columna 0 (las comillas triples son literales: cualquier indentación dentro del string se cuela en el output). Se descartó `textwrap.dedent()`: con `template_rules` no funcionaba porque la línea `Rules:` tiene 0 espacios (mínimo común = 0 → no quita nada). El parámetro se llama `input_call` (evita ocultar el builtin `input`).
 
+**4. `loop_prompt_output(input, model, dict_fixed_chars, dict_functions)`** →
+identifica el nombre de función y genera los argumentos. Flujo:
+1. Codifica el prompt y fuerza la estructura JSON fija (`{`, `"`, `fn_name`, `"`, `:`, ` `, `"`)
+2. Mantiene una lista de candidatos (`fn_names_tokens`) con los tokens de cada función
+3. En cada paso del while: obtiene logits → predice next_id → elimina candidatos que no coinciden
+4. Usa `temp_prompt` (copia de `init_prompt_ids`) para no duplicar tokens al obtener logits
+5. Cuando queda 1 candidato: fuerza los tokens exactos de esa función
+6. Fuerza `", "args": {` y luego para cada parámetro fuerza `"param": ` y deja al modelo predecir el valor
+7. Devuelve la lista completa de IDs, lista para `model.decode()`
+
+**5. `main()`** → orquesta todo: carga modelo, carga funciones, construye fixed_ids, construye prompt, ejecuta loop, decodifica, extrae JSON con `split("Output: ", 1)[1]`, parsea con `json.loads()`.
+
 ### Datos de token discovery (Qwen3-0.6B)
 
 ```
@@ -101,7 +124,7 @@ Observación clave: todas las funciones empiezan por [8822] (token "fn").
 - **swap de 8 GB creado** (también 1 GB de swap original = 9 GB total): el modelo Qwen3-0.6B (1.5 GB) no cabía en 3.8 GB de RAM con VS Code abierto
 - VS Code consume ~1.5 GB de RAM: mejor cerrarlo antes de `make run` (swap evita que pete pero es lento)
 - `make lint` pasa (flake8 + mypy). Config mypy en pyproject.toml para ignorar llm_sdk (no tiene anotaciones, no se modifica): `mypy_path = "llm_sdk"`, override con `ignore_errors = true` y `follow_imports = "skip"`
-- Docstrings en inglés, formato Google-style, en las 3 funciones
+- Docstrings en inglés, formato Google-style, en todas las funciones
 
 ## Decisión de diseño clave
 
@@ -115,6 +138,11 @@ Observación clave: todas las funciones empiezan por [8822] (token "fn").
 3. `dictionary["return"]` → KeyError: el campo JSON se llama `"returns"` (con s)
 4. Estructura en lista `[parameters, description, returns]` → mala práctica: acceso por índice oscuro. Mejor dict con claves nombradas
 5. `Small_LLM_Model.encode(fixed)` sin instanciar → AttributeError: encode es método de instancia, hay que crear el objeto primero
+6. `while len(fn_names_tokens) < 1:` → condición invertida: nunca entra al loop porque la lista tiene 5 elementos. Debe ser `> 1`
+7. Modificar una lista mientras se itera con `for` → salta elementos. Solución: iterar sobre una `.copy()`
+8. `init_prompt_ids` no se actualizaba dentro del while → el modelo recibía siempre la misma entrada y predecía el mismo token. Solución: usar `temp_prompt` y actualizarlo con cada `next_id`
+9. `json.load(string)` → error: es para archivos. Para strings se usa `json.loads()` (con s)
+10. Lógica comma/brace invertida o desfasada → la condición `i + 1 == len(args_fn)` funciona para 2 args pero falla para 3+. Corrección: `i == len(args_fn)`
 
 ## Conceptos clave entendidos
 
@@ -144,8 +172,15 @@ Observación clave: todas las funciones empiezan por [8822] (token "fn").
 - decode → IDs a texto (una vez al final)
 - El loop entero trabaja con IDs numéricos, nunca con strings
 
+### Eliminatoria de candidatos
+- En cada paso del while, se compara `next_id` con el token en posición `i` de cada candidato
+- Los que no coinciden se eliminan de la lista
+- Se itera sobre una **copia** de la lista para no romper el iterator al eliminar
+- Cuando queda 1 candidato, se sabe qué función es
+- **No hace falta re-comparar posiciones anteriores**: si un candidato sobrevivió, ya pasó todas las comparaciones previas
+
 ## Siguiente paso
-Paso 3 (cont.): limpiar el formato del super-prompt con `textwrap.dedent()` (ver "Dónde quedamos" arriba) y luego empezar el Paso 4: el loop con decodificación restringida.
+Completar Paso 4 (args multi-token, manejo de errores, bug 3+ args) y luego Paso 5 (procesar todos los prompts y escribir output).
 
 ## Notas importantes
 - El SDK tiene: `encode`, `get_logits_from_input_ids`, `decode`
