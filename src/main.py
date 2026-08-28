@@ -222,7 +222,9 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
     for name in dict_functions:
         fn_names_tokens.extend([dict_fixed_chars.get(name)])
         # Returns a dict with of lists [[x,y,z], [u], ...]
-    print(fn_names_tokens)
+
+    # FOR VIEWING THE FUNCTIONS IN TOKENS, FOR TESTING
+    # print(fn_names_tokens)
 
     i = 0
     llm_ids = []
@@ -268,6 +270,12 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
 
     # Loop to print the list of arguments stored
     i = 0
+
+    # Vocab to quickly associate "chrs" -> ID [index in LLM]
+    path_vocab = model.get_path_to_vocab_file()
+    with open(path_vocab) as file:
+        vocab = json.load(file)     # dict {texto: ID}
+
     for arg in args_fn:
         arg_type = args_type = dict_functions[fn]["parameters"][arg]["type"]
         init_prompt_ids.extend(dict_fixed_chars["\""])
@@ -275,36 +283,110 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
         init_prompt_ids.extend(dict_fixed_chars["\""])
         init_prompt_ids.extend(dict_fixed_chars[":"])
         init_prompt_ids.extend(dict_fixed_chars[" "])
-
-        if arg_type == "string":
+        if arg_type == "number":
+            next_id = logit_masking_number(vocab, model, init_prompt_ids)
+            # Faltaria la , final y o el espacio o el }
+        if arg_type == "boolean":
+            next_id = logit_masking_boolean(vocab, model, init_prompt_ids)
+            # Faltaria la , final y o el espacio o el }
+        else:
+            # The left option is arg_type = "string"
             init_prompt_ids.extend(dict_fixed_chars["\""])
-        
+            logit_masking_string()
+            init_prompt_ids.extend(dict_fixed_chars["\""])
+
+
+
         llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
         next_id = llm_logits.index(max(llm_logits))
         init_prompt_ids.extend([next_id])
-        while next_id != dict_fixed_chars[","][0] and next_id != dict_fixed_chars["\""][0]:
+        while model.decode([next_id]) not in [",", "\""]:
             llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
             next_id = llm_logits.index(max(llm_logits))
             init_prompt_ids.extend([next_id])
 
-        # If not last, put ', '
+        # If not last, put the next_id = ', ' if not a string
         if i + 1 != len(args_fn) and args_type != "string":
             init_prompt_ids.extend(dict_fixed_chars[","])
             init_prompt_ids.extend(dict_fixed_chars[" "])
-            
-        # Else, close the brackets of the output
+            i += 1
+
+        # Else, next_id = '"' and put a ', ' after.
         elif i + 1 != len(args_fn) and args_type == "string":
             init_prompt_ids.extend(dict_fixed_chars["\""])
             init_prompt_ids.extend(dict_fixed_chars[","])
             init_prompt_ids.extend(dict_fixed_chars[" "])
-
-        i += 1
+            i += 1
 
     init_prompt_ids.extend(dict_fixed_chars["}"])
     init_prompt_ids.extend(dict_fixed_chars["}"])
     # FOR TESTING, PRINT TO VIEW THE PROMPT IDs
     print(init_prompt_ids)
     return init_prompt_ids
+
+
+def logit_masking_number(vocab: dict, model: Small_LLM_Model,
+                         init_prompt_ids: list[int]) -> list[int]:
+
+    context = init_prompt_ids.copy()
+    numbers = "0123456789"
+    ids_numbers = [vocab[num] for num in numbers]
+    ids_parada = [vocab[","], vocab["}"]]
+    candidates = ids_numbers + ids_parada
+    # Lists can be added, the second will extend the first
+
+    next_id = []
+    flag = True
+    while flag:
+
+        llm_logits = model.get_logits_from_input_ids(context)
+        bigger_stats_token = float("-inf")  # REVISAR PA QUE
+        best_id = 0
+
+        for id in candidates:
+            if llm_logits[id] > bigger_stats_token:
+                bigger_stats_token = llm_logits[id]
+                best_id = id
+
+        if best_id in ids_parada:  # Found delimeters (last two)
+            flag = False
+        else:
+            next_id.append(best_id)
+            context.append(best_id)
+
+    return next_id
+
+
+def logit_masking_boolean(vocab: dict, model: Small_LLM_Model,
+                          init_prompt_ids: list[int]) -> list[int]:
+
+    context = init_prompt_ids.copy()
+    ids_booleans = [vocab["true"],  vocab["false"]]
+    ids_parada = [vocab[","], vocab["}"]]
+    candidates = ids_booleans + ids_parada
+    # Lists can be added, the second will extend the first
+
+    next_id = []
+    flag = True
+    while flag:
+
+        # List of stats of predictibility
+        llm_logits = model.get_logits_from_input_ids(context)
+        bigger_stats_token = float("-inf")  # REVISAR PA QUE
+        best_id = 0
+
+        for id in candidates:
+            if llm_logits[id] > bigger_stats_token:
+                bigger_stats_token = llm_logits[id]
+                best_id = id
+
+        if best_id in ids_parada:  # Found delimeters (last two)
+            flag = False
+        else:
+            next_id.append(best_id)
+            context.append(best_id)
+
+    return next_id
 
 
 def main() -> None:
@@ -331,7 +413,7 @@ def main() -> None:
     # Find the Output phrase and store the result after that (second half)
     result_prompt = final_output.split("Output: ", 1)[1]
     print("DEBUG repr:", repr(result_prompt))
-    result_dict = json.loads(result_prompt)
+    # result_dict = json.loads(result_prompt)
     # print(result_dict)
     print(repr(result_prompt))
     # FOR TESTING, PRINT TO VIEW THE FINAL PROMPT

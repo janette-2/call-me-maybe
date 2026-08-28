@@ -56,7 +56,27 @@ The package of the LLM (Large Language Model) used [Qwen 0.6B] contains the foll
 
 **3. decode(lista de tokens)** → Convierte los tokens que se han filtrado y recopilado en la última respuesta para pasarlo de vuelta a texto legible. Se usa una vez al final, cuando termina la generación.
 
-El resto (get_path_to_*) no se necesita para el proyecto.
+**4. get_path_to_vocab_file()** → Devuelve la ruta al archivo `vocab.json` del
+tokenizer (se descarga de Hugging Face). Ese archivo es un diccionario JSON que
+mapea **cada token (texto) a su ID numérico**. Es clave para el logit masking:
+permite saber, por ejemplo, cuáles son los IDs de los dígitos `0-9`, de `true`/
+`false`, o de los delimitadores (`{`, `}`, `,`, `"`, espacio), sin tener que
+adivinarlos con `encode`/`decode`. Ejemplo de uso:
+
+```python
+import json
+path = model.get_path_to_vocab_file()
+with open(path) as f:
+    vocab = json.load(f)      # dict {texto: ID}
+id_true  = vocab["true"]      # 1866
+id_false = vocab["false"]     # 3849
+```
+
+> **Detalle importante:** `file.read()` devuelve un **string**, no un
+> diccionario. Para poder acceder por clave (`vocab["true"]`) hay que
+> convertirlo: o bien usar `json.load(archivo)` (lee el archivo directamente),
+> o bien `json.loads(archivo.read())`. Ambos hacen lo mismo; la diferencia
+> está en si ya tienes el string o directamente el archivo.
 
 ### Algorithm:
 
