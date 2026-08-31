@@ -1,12 +1,29 @@
 # Contexto de la sesión - call_me_maybe
 
 ## Dónde quedamos
-Paso 4 (loop + decodificación restringida) **EN PROGRESO**. La identificación
-del nombre de función y la generación de argumentos de un solo token funcionan
-para `fn_add_numbers`. `json.loads()` parsea correctamente el output. Falta:
-args multi-token, manejo de 0 candidatos, procesar todos los prompts del
-fichero de tests y escribir el output final. Hay un bug latente en la condición
-comma/brace para funciones con 3+ argumentos.
+Paso 4 (loop + decodificación restringida) y Paso 5 (procesar prompts + output)
+**IMPLEMENTADOS y con lint limpio** (flake8 + mypy OK). Bugs del loop corregidos.
+
+- **Identificación de fn_name** → funciona
+- **Args number/boolean** → funcionan (conjunto cerrado)
+- **Args string** → reescrito con estrategia de **conjunto cerrado = tokens del User:**
+  (la idea que propusimos): válidos = tokens del segmento `User:` + tokens de cierre
+  (`","`, `"}`, `"`). Garantiza JSON 100% válido.
+- **Bug 3+ args** (comma/brace) → corregido (se decidía con `is_last`)
+- **Bugs críticos ya resueltos**: `else` de boolean se comía los numbers; los valores
+  generados nunca se añadían a `init_prompt_ids`; las llaves de cierre estaban dentro
+  de un bloque comentado (JSON nunca cerrado); faltaba la comilla de apertura del
+  string; espacios de contorno en el valor (`.strip()` + re-encode).
+- **Paso 5** → `main()` procesa todos los prompts y escribe
+  `output/function_calling_results.json`.
+
+### AVISO (importante, MODO 42)
+La **estructura** del JSON es correcta al 100% (decodificación restringida).
+La **precisión semántica del VALOR** depende del modelo 0.6B con decoding greedy:
+acierta valores simples ("hello", "world", "shrek" a veces) pero falla en el corte
+exacto del slice (p.ej. "Greet shrek" a veces produce "Greet shrek" en vez de
+"shrek", porque el modelo no sabe QUÉ parte del User es el argumento). Es una
+limitación del modelo, no del masking.
 
 ## Plan de implementación (5 pasos)
 
@@ -14,14 +31,8 @@ comma/brace para funciones con 3+ argumentos.
 Paso 1: Token discovery          → HECHO
 Paso 2: Cargar funciones JSON    → HECHO
 Paso 3: Construir super-prompt   → HECHO
-Paso 4: Loop + autómata          → EN PROGRESO
-  - Identificación de fn_name    → Funciona
-  - Args de un solo token        → Funciona
-  - Parseo con json.loads()      → Funciona
-  - Args multi-token (strings)   → PENDIENTE
-  - Manejo de 0 candidatos       → PENDIENTE
-  - Bug: condición 3+ args       → PENDIENTE
-Paso 5: Procesar prompts y escribir output → PENDIENTE
+Paso 4: Loop + autómata          → HECHO (estructura 100% válida)
+Paso 5: Procesar prompts y output → HECHO (main() lo hace)
 ```
 
 ## Visión completa del flujo
@@ -180,7 +191,10 @@ Observación clave: todas las funciones empiezan por [8822] (token "fn").
 - **No hace falta re-comparar posiciones anteriores**: si un candidato sobrevivió, ya pasó todas las comparaciones previas
 
 ## Siguiente paso
-Completar Paso 4 (args multi-token, manejo de errores, bug 3+ args) y luego Paso 5 (procesar todos los prompts y escribir output).
+Evaluar la precisión real sobre los 11 prompts del test (correr `uv run python -m src`)
+y decidir si hace falta mejorar la extracción del slice del valor (p.ej. restringir
+el conjunto del User a sustantivos/palabras concretas, o usar un criterio de
+"palabra correcta" frente a los tokens de contexto). La estructura ya es 100% válida.
 
 ## Notas importantes
 - El SDK tiene: `encode`, `get_logits_from_input_ids`, `decode`

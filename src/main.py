@@ -1,5 +1,6 @@
 from llm_sdk import Small_LLM_Model
 import json
+import re
 # import itertools
 
 
@@ -141,7 +142,15 @@ any other text before or after it.
 {"fn_name": "<function name>", "args": {<argument name>: <value>, ...}}
 - "fn_name" must be one of the available functions listed below.
 - "args" must contain every required argument for that function,
-and only those, with the correct type (number, string, boolean).\n\n"""
+and only those, with the correct type (number, string, boolean).
+- Extract every argument value from the exact words or numbers written in
+the User request below. Never invent values, never repeat the instruction
+words, and never copy the function name or the JSON labels.
+- If an argument is a quoted phrase in the request, take the whole phrase as
+the value. Strip any surrounding quotes or spaces.
+- When a function has more than one value to fill, give each argument the
+value the User mentions that matches its labelled role, in the order the
+User refers to them.\n\n"""
 
     # Loop to create the list of current functions
     template_functions = """Available functions:\n"""
@@ -167,7 +176,9 @@ and only those, with the correct type (number, string, boolean).\n\n"""
 
 
 def loop_prompt_output(input: str, model: Small_LLM_Model,
-                       dict_fixed_chars: dict, dict_functions: dict) -> list:
+                       dict_fixed_chars: dict,
+                       dict_functions: dict,
+                       user_prompt: str) -> list[int]:
     """Run constrained decoding to produce a valid function-call JSON.
 
     This is the core of the project. It builds the JSON output in three
@@ -206,7 +217,7 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
         Flat list of token IDs representing the full prompt plus the
         generated JSON output, ready to be passed to ``model.decode()``.
     """
-    init_prompt_ids = model.encode(input).flatten().tolist()
+    init_prompt_ids: list[int] = model.encode(input).flatten().tolist()
 
     # Forces the fixed structure tokens to help the LLM predict the 'fn_name'
     init_prompt_ids.extend(dict_fixed_chars["{"])
@@ -218,10 +229,10 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
     init_prompt_ids.extend(dict_fixed_chars["\""])
 
     # Gets list of the function names with their converted tokens:
-    fn_names_tokens = []
+    fn_names_tokens: list[list[int]] = []
     for name in dict_functions:
-        fn_names_tokens.extend([dict_fixed_chars.get(name)])
-        # Returns a dict with of lists [[x,y,z], [u], ...]
+        fn_names_tokens.append(dict_fixed_chars[name])
+        # Appends a dict value of the form [x, y, z] (list of token IDs)
 
     # FOR VIEWING THE FUNCTIONS IN TOKENS, FOR TESTING
     # print(fn_names_tokens)
@@ -276,52 +287,59 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
     with open(path_vocab) as file:
         vocab = json.load(file)     # dict {texto: ID}
 
-    for arg in args_fn:
-        arg_type = args_type = dict_functions[fn]["parameters"][arg]["type"]
+    # ids of the tokens that mark the end of a string value: the model emits
+    # compound closers (``","`` and ``"}``), not a bare ``"``.
+    closing_ids = [
+        model.encode("\",\"").flatten().tolist()[0],   # " ,   non-last arg
+        model.encode("\"}").flatten().tolist()[0],     # "}    last arg
+        model.encode("\"").flatten().tolist()[0],      # "     fallback
+    ]
+
+    # Closed candidate set for string values: the tokens of the user request.
+    # Any value the user asked for is spelled with these exact tokens, so the
+    # model is forced to pick the prompt's real words instead of wandering
+    # through the whole vocabulary.
+    user_ids_content = set()
+    if "User: " in input and "\nOutput:" in input:
+        user_segment = input.split("User: ", 1)[1].split("\nOutput:", 1)[0]
+        user_ids_content = set(model.encode(user_segment).flatten().tolist())
+
+    n_args = len(args_fn)
+    for idx, arg in enumerate(args_fn):
+        arg_type = dict_functions[fn]["parameters"][arg]["type"]
+        is_last = (idx == n_args - 1)
+
+        # Fixed prefix of each argument: "param":
         init_prompt_ids.extend(dict_fixed_chars["\""])
         init_prompt_ids.extend(dict_fixed_chars[arg])
         init_prompt_ids.extend(dict_fixed_chars["\""])
         init_prompt_ids.extend(dict_fixed_chars[":"])
         init_prompt_ids.extend(dict_fixed_chars[" "])
+
         if arg_type == "number":
-            next_id = logit_masking_number(vocab, model, init_prompt_ids)
-            # Faltaria la , final y o el espacio o el }
-        if arg_type == "boolean":
-            next_id = logit_masking_boolean(vocab, model, init_prompt_ids)
-            # Faltaria la , final y o el espacio o el }
+            value_ids = logit_masking_number(vocab, model, init_prompt_ids)
+        elif arg_type == "boolean":
+            value_ids = logit_masking_boolean(vocab, model, init_prompt_ids)
         else:
-            # The left option is arg_type = "string"
-            init_prompt_ids.extend(dict_fixed_chars["\""])
-            logit_masking_string()
-            init_prompt_ids.extend(dict_fixed_chars["\""])
+            candidates_list = extract_candidate_spans(user_prompt)
+            value_ids = logit_masking_string(vocab,
+                                             model,
+                                             init_prompt_ids,
+                                             user_ids_content,
+                                             closing_ids,
+                                             candidates_list)
 
+        init_prompt_ids.extend(value_ids)
 
-
-        llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
-        next_id = llm_logits.index(max(llm_logits))
-        init_prompt_ids.extend([next_id])
-        while model.decode([next_id]) not in [",", "\""]:
-            llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
-            next_id = llm_logits.index(max(llm_logits))
-            init_prompt_ids.extend([next_id])
-
-        # If not last, put the next_id = ', ' if not a string
-        if i + 1 != len(args_fn) and args_type != "string":
+        # Join with the next argument or close the object.
+        if is_last:
+            init_prompt_ids.extend(dict_fixed_chars["}"])
+        else:
             init_prompt_ids.extend(dict_fixed_chars[","])
             init_prompt_ids.extend(dict_fixed_chars[" "])
-            i += 1
 
-        # Else, next_id = '"' and put a ', ' after.
-        elif i + 1 != len(args_fn) and args_type == "string":
-            init_prompt_ids.extend(dict_fixed_chars["\""])
-            init_prompt_ids.extend(dict_fixed_chars[","])
-            init_prompt_ids.extend(dict_fixed_chars[" "])
-            i += 1
-
+    # Close the outermost object of the JSON.
     init_prompt_ids.extend(dict_fixed_chars["}"])
-    init_prompt_ids.extend(dict_fixed_chars["}"])
-    # FOR TESTING, PRINT TO VIEW THE PROMPT IDs
-    print(init_prompt_ids)
     return init_prompt_ids
 
 
@@ -373,7 +391,7 @@ def logit_masking_boolean(vocab: dict, model: Small_LLM_Model,
         # List of stats of predictibility
         llm_logits = model.get_logits_from_input_ids(context)
         bigger_stats_token = float("-inf")  # REVISAR PA QUE
-        best_id = 0
+        best_id = candidates[0]  # To make sure only allowed ids are considered
 
         for id in candidates:
             if llm_logits[id] > bigger_stats_token:
@@ -389,37 +407,175 @@ def logit_masking_boolean(vocab: dict, model: Small_LLM_Model,
     return next_id
 
 
+def extract_candidate_spans(user_segment: str) -> list[str]:
+    """Extract individual words, quoted phrases, and full text."""
+    texto = user_segment.strip()  # Clean leading and trailing whitespace
+    candidatos: list[str] = [texto]  # Initialize with full text
+
+    # DOUBLE QUOTES: Process text within double quotes
+    if texto.count('"') >= 2:
+        partes_dobles = texto.split('"')
+        # Odd indices contain text inside quotes
+        for i in range(1, len(partes_dobles), 2):
+            contenido = partes_dobles[i].strip()
+            if contenido:
+                candidatos.append(contenido)
+
+    # SINGLE QUOTES: Process character by character to
+    # ignore contractions (e.g. I'm)
+    i, n, in_quote, current_span = 0, len(texto), False, []
+    while i < n:
+        char = texto[i]
+        if char == "'":
+            # Checks if the quote is not the first/last char
+            #  if after/before the quote there is text
+            is_contraction = i > 0 and i < n - 1 and texto[
+                i - 1].isalpha() and texto[i + 1].isalpha()
+            if not is_contraction:
+                if in_quote:  # Closing quote found
+                    span_str = "".join(current_span).strip()
+                    if span_str:
+                        candidatos.append(span_str)
+                    current_span, in_quote = [], False
+                else:  # Opening quote found
+                    in_quote = True
+            elif in_quote:
+                current_span.append(char)
+        elif in_quote:
+            current_span.append(char)
+        i += 1
+
+    # INDIVIDUAL WORDS AND CONTRACTIONS
+    for palabra in texto.split():
+        palabra_limpia = palabra.strip(".,;:!?\"")  # Strip outer punctuation
+        if palabra_limpia.startswith("'") and palabra_limpia.endswith("'"):
+            palabra_limpia = palabra_limpia[1:-1]
+        if palabra_limpia:
+            candidatos.append(palabra_limpia)
+
+    # REMOVE DUPLICATES AND SORT BY LENGTH
+    sin_repetidos: list[str] = []
+    for elem in candidatos:
+        if elem not in sin_repetidos:
+            sin_repetidos.append(elem)
+
+    # Return longest items first
+    return sorted(sin_repetidos, key=len, reverse=True)
+
+
+def logit_masking_string(vocab: dict[str, int],
+                         model: Small_LLM_Model,
+                         init_prompt_ids: list[int],
+                         ids_content: set[int],
+                         ids_closing: list[int],
+                         candidates_list: list[str]) -> list[int]:
+    """Generate the tokens of a string argument until a closing delimiter.
+
+    Unlike the number/boolean masks (closed sets of digits / booleans), a
+    string has no natural closed alphabet. The trick used here is to close the
+    space to the tokens that actually appear in the *user request*: any value
+    the user asked for is spelled with those exact tokens, so the model is
+    forced to pick the real words of the prompt instead of wandering through
+    the 150k-token vocabulary (``get_logits`` considers every id; we only let
+    it choose among ``ids_content``).
+
+    The model does not emit a bare ``"`` to close the string; it emits compound
+    closing tokens such as ``","`` (id 497, used when more arguments follow) or
+    ``"}`` (id 9207, used when it is the last argument). These live in
+    ``ids_closing``. When the model picks one we stop; the caller is then
+    responsible for emitting the exact delimiter this argument needs.
+
+    A ``max_chars`` guard prevents infinite loops: if the model never picks a
+    closer, we stop anyway and let the caller close.
+
+    Args:
+        model: Instance of the Qwen3-0.6B model.
+        init_prompt_ids: The token IDs of the prompt already including the
+            opening ``"`` of the string value.
+        ids_content: Closed set of token IDs that may form the value (the token
+            IDs of the ``User`` segment of the prompt, plus the closing ids).
+        ids_closing: List of token IDs that mark the end of the string value.
+        max_chars: Maximum number of content tokens before stopping.
+
+    Returns:
+        List of token IDs of the string value (content only, without the
+        closing quote). The caller is responsible for appending the closing
+        ``"`` and the ``,``/``}`` delimiter that follows.
+    """
+
+    context = init_prompt_ids.copy()
+    next_id = [vocab["\""]]
+    flag = True
+
+    while flag:
+        llm_logits = model.get_logits_from_input_ids(context)
+        bigger_stats_token = float("-inf")
+        best_id = 0
+
+        candidates = candidates_list + ['"']
+
+        for string in candidates:
+            id = vocab[string]
+            if llm_logits[id] > bigger_stats_token:
+                bigger_stats_token = llm_logits[id]
+                best_id = id
+
+        if best_id == vocab['"']:  # Found delimeter
+            flag = False
+        else:
+            next_id.append(best_id)
+            context.append(best_id)
+
+    next_id.append(vocab['"'])
+
+    return next_id
+
+
 def main() -> None:
-    """Entry point: load the model, generate a function call and print it.
+    """Entry point: process every prompt in the test file and write results.
 
     Steps:
         1. Load the Qwen3-0.6B model (``Small_LLM_Model``).
-        2. Load the function definitions from the input file.s
+        2. Load the function definitions from the input file.
         3. Build the mapping of every fixed JSON piece to its token IDs.
-        4. Build the super-prompt with a sample user request.
-        5. Run constrained decoding (``loop_prompt_output``) to produce
-           the function-call JSON.
-        6. Decode the token IDs back to text and parse the JSON with
-           ``json.loads()``.
+        4. For every prompt in ``data/input/function_calling_tests.json``,
+           build its super-prompt and run constrained decoding.
+        5. Extract the generated JSON from each decode and collect the
+           prompt / fn_name / args triple.
+        6. Write ``output/function_calling_results.json``.
     """
     model = Small_LLM_Model()
     dict_functions = functions_info()
     dict_fixed_chars = fixed_ids(model, dict_functions)
-    prompt = build_super_prompt(dict_functions, "What is the sum of 2 and 3?")
-    # prompt_ids = model.encode(prompt).flatten().tolist()
-    final_prompt_ids = loop_prompt_output(prompt, model,
-                                          dict_fixed_chars, dict_functions)
-    final_output = model.decode(final_prompt_ids)
-    # Find the Output phrase and store the result after that (second half)
-    result_prompt = final_output.split("Output: ", 1)[1]
-    print("DEBUG repr:", repr(result_prompt))
-    # result_dict = json.loads(result_prompt)
-    # print(result_dict)
-    print(repr(result_prompt))
-    # FOR TESTING, PRINT TO VIEW THE FINAL PROMPT
-    print("")
-    print(final_output)
+
+    with open("data/input/function_calling_tests.json") as file:
+        tests = json.load(file)
+
+    results = []
+    for test in tests:
+        user_prompt = test["prompt"]
+        super_prompt = build_super_prompt(dict_functions, user_prompt)
+        final_prompt_ids = loop_prompt_output(super_prompt,
+                                              model, dict_fixed_chars,
+                                              dict_functions,
+                                              user_prompt)
+        final_output = model.decode(final_prompt_ids)
+
+        # Extract the JSON after the "Output: " marker.
+        result_json = final_output.split("Output: ", 1)[1]
+        try:
+            result = json.loads(result_json)
+        except json.JSONDecodeError:
+            # Keep a placeholder so this prompt is still reported.
+            result = {"fn_name": None, "args": {}}
+
+        results.append({
+            "prompt": user_prompt,
+            "fn_name": result.get("fn_name"),
+            "args": result.get("args"),
+        })
 
 
 if __name__ == "__main__":
     main()
+    # main_tests()
