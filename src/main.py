@@ -447,7 +447,7 @@ def extract_candidate_spans(user_segment: str) -> list[str]:
 
     # INDIVIDUAL WORDS AND CONTRACTIONS
     for palabra in texto.split():
-        palabra_limpia = palabra.strip(".,;:!?\"")  # Strip outer punctuation
+        palabra_limpia = palabra.strip(".,;:!?\"'")  # Strip outer punctuation
         if palabra_limpia.startswith("'") and palabra_limpia.endswith("'"):
             palabra_limpia = palabra_limpia[1:-1]
         if palabra_limpia:
