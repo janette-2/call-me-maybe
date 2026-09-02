@@ -1,7 +1,5 @@
 from llm_sdk import Small_LLM_Model
 import json
-import re
-# import itertools
 
 
 def fixed_ids(model: Small_LLM_Model,
@@ -287,29 +285,12 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
     with open(path_vocab) as file:
         vocab = json.load(file)     # dict {texto: ID}
 
-    # ids of the tokens that mark the end of a string value: the model emits
-    # compound closers (``","`` and ``"}``), not a bare ``"``.
-    closing_ids = [
-        model.encode("\",\"").flatten().tolist()[0],   # " ,   non-last arg
-        model.encode("\"}").flatten().tolist()[0],     # "}    last arg
-        model.encode("\"").flatten().tolist()[0],      # "     fallback
-    ]
-
-    # Closed candidate set for string values: the tokens of the user request.
-    # Any value the user asked for is spelled with these exact tokens, so the
-    # model is forced to pick the prompt's real words instead of wandering
-    # through the whole vocabulary.
-    user_ids_content = set()
-    if "User: " in input and "\nOutput:" in input:
-        user_segment = input.split("User: ", 1)[1].split("\nOutput:", 1)[0]
-        user_ids_content = set(model.encode(user_segment).flatten().tolist())
-
     n_args = len(args_fn)
     for idx, arg in enumerate(args_fn):
         arg_type = dict_functions[fn]["parameters"][arg]["type"]
         is_last = (idx == n_args - 1)
 
-        # Fixed prefix of each argument: "param":
+        # Fixed prefix of each argument:
         init_prompt_ids.extend(dict_fixed_chars["\""])
         init_prompt_ids.extend(dict_fixed_chars[arg])
         init_prompt_ids.extend(dict_fixed_chars["\""])
@@ -325,8 +306,6 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
             value_ids = logit_masking_string(vocab,
                                              model,
                                              init_prompt_ids,
-                                             user_ids_content,
-                                             closing_ids,
                                              candidates_list)
 
         init_prompt_ids.extend(value_ids)
@@ -466,8 +445,6 @@ def extract_candidate_spans(user_segment: str) -> list[str]:
 def logit_masking_string(vocab: dict[str, int],
                          model: Small_LLM_Model,
                          init_prompt_ids: list[int],
-                         ids_content: set[int],
-                         ids_closing: list[int],
                          candidates_list: list[str]) -> list[int]:
     """Generate the tokens of a string argument until a closing delimiter.
 
@@ -504,31 +481,62 @@ def logit_masking_string(vocab: dict[str, int],
     """
 
     context = init_prompt_ids.copy()
+    possible_tokens = []
     next_id = [vocab["\""]]
-    flag = True
 
-    while flag:
+    candidates = candidates_list + ['"']
+    for candidate in candidates:
+        ids = model.encode(candidate).flatten().tolist()
+        possible_tokens.append(ids)
+
+    remaining_opt = possible_tokens.copy()
+    i = 0
+    while len(remaining_opt) > 1:
         llm_logits = model.get_logits_from_input_ids(context)
-        bigger_stats_token = float("-inf")
-        best_id = 0
+        predicted_id = llm_logits.index(max(llm_logits))
 
-        candidates = candidates_list + ['"']
-
-        for string in candidates:
-            id = vocab[string]
-            if llm_logits[id] > bigger_stats_token:
-                bigger_stats_token = llm_logits[id]
-                best_id = id
-
-        if best_id == vocab['"']:  # Found delimeter
-            flag = False
-        else:
-            next_id.append(best_id)
-            context.append(best_id)
+        for option in remaining_opt:
+            if len(option) > i and option[i] == predicted_id:
+                continue
+            else:
+                remaining_opt.remove(option)
+        next_id.append(predicted_id)
+        context.append(predicted_id)
 
     next_id.append(vocab['"'])
 
     return next_id
+
+
+"""
+def logit_masking_string(model, init_prompt_ids, candidates_text,
+                         ids_closing, max_chars=64):
+    cand_tokens = [model.encode(c).flatten().tolist() for c in candidates_text]
+    cand_tokens = [t for t in cand_tokens if t]
+
+    context = init_prompt_ids.copy()
+    remaining = cand_tokens.copy()
+    next_id: list[int] = []
+    i = 0
+
+    while remaining and i < max_chars:
+        llm_logits = model.get_logits_from_input_ids(context)
+        allowed = {t[i] for t in remaining if len(t) > i}
+        if not allowed:
+            break
+
+        best_id = max(allowed, key=lambda tid: llm_logits[tid])
+        next_id.append(best_id)
+        context.append(best_id)
+
+        remaining = [t for t in remaining if len(t) > i and t[i] == best_id]
+        i += 1
+
+        if len(remaining) == 1 and len(remaining[0]) == i:
+            break
+
+    return next_id
+ """
 
 
 def main() -> None:
