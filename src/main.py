@@ -241,7 +241,11 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
     while len(fn_names_tokens) > 1:
         # Catch the new token that the LLM predicts after the prompt input
         llm_logits = model.get_logits_from_input_ids(temp_prompt)
-        next_id = llm_logits.index(max(llm_logits))
+        allowed = [ids[i] for ids in fn_names_tokens if len(ids) > i]
+        # Takes the first id in the different fn_tokens if hey have len > i
+        next_id = max(allowed, key=lambda tid: llm_logits[tid])
+        # Captures the max of the logits from the fn_names_tokens[i]
+
         # Store the predicted ids into a list
         llm_ids.extend([next_id])
 
@@ -491,20 +495,25 @@ def logit_masking_string(vocab: dict[str, int],
 
     remaining_opt = possible_tokens.copy()
     i = 0
-    while len(remaining_opt) > 1:
+    max_longitud = max((len(t) for t in possible_tokens), default=0)
+    while remaining_opt and i < max_longitud:
         llm_logits = model.get_logits_from_input_ids(context)
-        predicted_id = llm_logits.index(max(llm_logits))
-
-        for option in remaining_opt:
-            if len(option) > i and option[i] == predicted_id:
-                continue
-            else:
-                remaining_opt.remove(option)
-        next_id.append(predicted_id)
-        context.append(predicted_id)
+        # candidates[i] for every candidate not the entire ids list
+        allowed = [t[i] for t in remaining_opt if len(t) > i]
+        if not allowed:
+            break
+        best_id = max(allowed, key=lambda tid: llm_logits[tid])
+        # To make sure only allowed ids are considered
+        next_id.append(best_id)
+        context.append(best_id)
+        remaining_opt = [t for t in remaining_opt
+                         if len(t) > i and t[i] == best_id]
+        # Gets the entire ids list if the remainig[i] matches the predicted
+        i += 1
+        if len(remaining_opt) == 1 and len(remaining_opt[0]) == i:  # REVISAR EL MOTIVO
+            break
 
     next_id.append(vocab['"'])
-
     return next_id
 
 
@@ -521,7 +530,7 @@ def logit_masking_string(model, init_prompt_ids, candidates_text,
 
     while remaining and i < max_chars:
         llm_logits = model.get_logits_from_input_ids(context)
-        allowed = {t[i] for t in remaining if len(t) > i}
+         allowed = {t[i] for t in remaining if len(t) > i}
         if not allowed:
             break
 
@@ -582,6 +591,10 @@ def main() -> None:
             "fn_name": result.get("fn_name"),
             "args": result.get("args"),
         })
+
+    with open("output/function_calling_results.json",
+              "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=4, ensure_ascii=False)
 
 
 if __name__ == "__main__":
