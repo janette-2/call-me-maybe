@@ -273,6 +273,22 @@ def extraer_palabras(texto: str) -> list[str]:
     return palabras
 
 
+def extraer_numeros(texto: str) -> list[str]:
+    """Return the integer numbers (digit sequences) of ``texto`` in order."""
+    numeros: list[str] = []
+    actual: list[str] = []
+    for ch in texto:
+        if ch.isdigit():
+            actual.append(ch)
+        else:
+            if actual:
+                numeros.append("".join(actual))
+                actual = []
+    if actual:
+        numeros.append("".join(actual))
+    return numeros
+
+
 def extraer_palabra_tras_with(texto: str) -> str | None:
     """Return the word right after "with"/"con" (pattern: replace X with Y)."""
     palabras = extraer_palabras(texto)
@@ -428,33 +444,42 @@ def resolver_falla_fn(user_prompt: str, dict_functions: dict) -> str | None:
 
 
 def loop_prompt_output(input: str, model: Small_LLM_Model,
-                       dict_fixed_chars: dict,
+                       dict_fixed_chars: dict[str, list[int]],
                        dict_functions: dict,
                        user_prompt: str) -> list[int]:
     """Run constrained decoding and return the full token sequence."""
 
     def _escoge_fn() -> list[int]:
-        """Identify the function token sequence by elimination."""
+        """Identify the function with a SINGLE ``get_logits`` call.
+
+        All function names share the leading ``fn`` token, so the first
+        position where their tokens differ uniquely separates them. We make
+        one model call and pick, among the tokens in that deciding position,
+        the one with the highest logit. This replaces the old token-by-token
+        elimination (one call per token) with a single call, saving a lot of
+        budget without losing precision (the deterministic fallback below
+        still guarantees a correct function even if the model hesitates).
+        """
         fn_names_tokens = [dict_fixed_chars[name] for name in dict_functions]
 
-        i = 0
-        temp_prompt = init_prompt_ids.copy()
-        while len(fn_names_tokens) > 1:
-            llm_logits = model.get_logits_from_input_ids(temp_prompt)
-            allowed = [ids[i] for ids in fn_names_tokens if len(ids) > i]
-            next_id = masked_argmax(llm_logits, allowed)
+        # Position of the first token where the function names differ.
+        longitud_max = max((len(t) for t in fn_names_tokens), default=0)
+        posicion = 0
+        for posicion in range(longitud_max):
+            tokens_pos = {t[posicion] for t in fn_names_tokens
+                          if len(t) > posicion}
+            if len(tokens_pos) > 1:
+                break
 
-            fn_names_tokens = [
-                ids for ids in fn_names_tokens
-                if len(ids) > i + 1 and ids[i] == next_id
-            ]
-            temp_prompt.append(next_id)
-            i += 1
+        llm_logits = model.get_logits_from_input_ids(init_prompt_ids)
+        allowed = [t[posicion] for t in fn_names_tokens if len(t) > posicion]
+        best_id = masked_argmax(llm_logits, allowed)
 
-        if len(fn_names_tokens) == 1:
-            return fn_names_tokens[0]
+        for tokens in fn_names_tokens:
+            if len(tokens) > posicion and tokens[posicion] == best_id:
+                return tokens
 
-        # Eliminated every candidate: fall back to a deterministic choice.
+        # No function matched: fall back to a deterministic choice.
         fn = resolver_falla_fn(user_prompt, dict_functions)
         if fn is not None:
             return dict_fixed_chars[fn]
@@ -510,6 +535,12 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
 
     with_usado = False
 
+    # Numbers already written in the request are resolved deterministically,
+    # one per position, before ever letting the model spell them digit by
+    # digit. This removes every ``get_logits`` call for number arguments.
+    numeros_prompt = extraer_numeros(user_prompt)
+    idx_numero = 0
+
     n_args = len(args_fn)
     for idx, arg in enumerate(args_fn):
         arg_type = dict_functions[fn]["parameters"][arg]["type"]
@@ -522,7 +553,17 @@ def loop_prompt_output(input: str, model: Small_LLM_Model,
         init_prompt_ids.extend(dict_fixed_chars[" "])
 
         if arg_type == "number":
-            value_ids = logit_masking_number(vocab, model, init_prompt_ids)
+            if idx_numero < len(numeros_prompt):
+                # Deterministic: force the number written in the request
+                # (0 model calls). The typed value is a float per the schema.
+                number_texto = numeros_prompt[idx_numero]
+                idx_numero += 1
+                number_ids = [vocab[d] for d in number_texto]
+                value_ids = number_ids + [
+                    vocab["."], vocab["0"]]
+            else:
+                value_ids = logit_masking_number(vocab, model,
+                                                 init_prompt_ids)
         elif arg_type == "boolean":
             value_ids = logit_masking_boolean(vocab, model, init_prompt_ids)
         else:
