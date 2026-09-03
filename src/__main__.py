@@ -1,4 +1,4 @@
-from .main import main
+from .main_best import main
 # from .main import main_tests
 
 if __name__ == "__main__":

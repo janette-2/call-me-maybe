@@ -584,7 +584,7 @@ def logit_masking_string(vocab: dict[str, int],
                          if len(t) > i and t[i] == best_id]
         # Gets the entire ids list if the remainig[i] matches the predicted
         i += 1
-        if len(remaining_opt) == 1 and len(remaining_opt[0]) == i:
+        if len(remaining_opt) == 1 and len(remaining_opt[0]) == i:  # REVISAR EL MOTIVO
             break
 
     next_id.append(vocab['"'])
