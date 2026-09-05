@@ -73,7 +73,7 @@ CONCEPTO_A_REGEX = {
     "whitespace": r"\s+", "space": r"\s+", "spaces": r"\s+",
     "punctuation": r"[^\w\s]",
     "uppercase": r"[A-Z]", "lowercase": r"[a-z]",
-    "asterisks": "*",
+    "asterisks": r"\*", "asterisk": r"\*",
 }
 
 
@@ -97,7 +97,7 @@ def masked_argmax(llm_logits: Any, allowed_ids: list[int]) -> int:
     Returns:
         The id among ``allowed_ids`` whose logit is highest.
     """
-    logits_array = np.asarray(llm_logits)
+    logits_array = np.asarray(llm_logits) 
     mascara = np.full(logits_array.shape, -np.inf)
     mascara[allowed_ids] = logits_array[allowed_ids]
     return int(np.argmax(mascara))
@@ -146,8 +146,13 @@ def functions_info() -> dict:
         print(f"Aviso: functions_definition.json no es un JSON válido: {e}")
         return dict_functions
 
+    # Validacion de estructuras
     for dictionary in f_content:
         try:
+            # **dictionary permite pasar todos los campos que tiene
+            # como variables separadas (name = "fn_x", description = "Adds xx")
+            # no como un diccionario unificado
+            # dict = {name : "fn_x", description = "Adds xx"}
             funcion_validada = DefinicionFuncion(**dictionary)
         except ValidationError as e:
             print(f"Aviso: función descartada por formato inválido: {e}")
